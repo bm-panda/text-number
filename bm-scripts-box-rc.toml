@@ -1,0 +1,22 @@
+[bmscriptsbox]
+
+[bmscriptsbox.info]
+id = "b0d1d291-a32d-493c-ae2e-ce8cdbdb82e5"
+name = "文本编号"
+desc = "文本编号 - 为选中分段文本自动添加编号工具，AutoHotkey 脚本，通过不忙脚本盒子快速复制触发，支持 14 种编号格式（数字 字母 罗马数字 中文数字），编号结果自动复制到剪贴板"
+version = "1.0.0"
+icon = "./imgs/logo.png"
+
+[bmscriptsbox.runtime]
+language = "autohotkey"
+language_version = ">=2.0.0"
+entry = "main.ahk"
+terminal = "always"
+
+[bmscriptsbox.triggers.quick_copy]
+enabled = true
+
+[[bmscriptsbox.inputs]]
+name = "text"
+type = "text"
+description = "要编号的文本内容"
