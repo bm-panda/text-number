@@ -1,4 +1,5 @@
 #Requires AutoHotkey v2.0
+#Include "JSON.ahk"
 
 if A_Args.Length = 0 {
     TrayTip "文本编号", "请选中文本后双击 Ctrl+C 触发本脚本", "Iconi"
@@ -6,14 +7,19 @@ if A_Args.Length = 0 {
 }
 paramsPath := A_Args[1]
 
-jsonText := FileRead(paramsPath, "UTF-8")
-if !jsonText {
+try payload := JSON.parse(FileRead(paramsPath, "UTF-8"))
+catch {
+    TrayTip "文本编号", "参数解析失败", "Iconi"
     ExitApp 1
 }
 
-userText := ExtractJsonText(jsonText)
+env := payload.Has("environment") ? payload["environment"] : Map()
+apiBase := env.Has("api_base") ? env["api_base"] : ""
+
+data := payload.Has("data") ? payload["data"] : Map()
+userText := (data.Has("text") && data["text"].Length) ? data["text"][1] : ""
 if (userText = "") {
-    TrayTip "文本编号", "未检测到选中文本", "Iconi"
+    Notify(apiBase, "请选中文本后双击 Ctrl+C 唤醒脚本", "info")
     ExitApp 0
 }
 
@@ -26,213 +32,114 @@ for line in lines {
 }
 
 if (nonEmptyCount = 0) {
-    TrayTip "文本编号", "选中的文本为空", "Iconi"
+    Notify(apiBase, "选中的文本为空", "info")
     ExitApp 0
 }
 
-formatType := ShowFormatGui(nonEmptyCount)
-if (formatType = 0) {
+targetHwnd := WinExist("A")
+
+choice := ShowFormatGui(nonEmptyCount)
+if (choice[1] = 0) {
     ExitApp 0
 }
+formatType := choice[1]
+autoPaste := choice[2]
 
 numberedText := NumberLines(lines, formatType)
 
 A_Clipboard := ""
 A_Clipboard := numberedText
 if !ClipWait(0.5) {
-    TrayTip "文本编号", "剪贴板操作失败", "Iconi"
+    Notify(apiBase, "剪贴板操作失败", "error")
     ExitApp 1
 }
 
-TrayTip "文本编号", "编号完成，结果已复制到剪贴板", "Iconi"
-
-q := Chr(34)
-formatNames := Map(
-    1, "1 2 3", 2, "01 02 03", 3, "(1) (2) (3)",
-    4, "（1）（2）（3）", 5, "[1] [2] [3]", 6, "【1】【2】【3】",
-    7, "1. 2. 3.", 8, "a b c", 9, "A B C",
-    10, "① ② ③", 11, "i ii iii", 12, "I II III",
-    13, "一 二 三", 14, "壹 贰 叁")
-output := "{" . q . "summary" . q . ":" . q . "编号完成: " . nonEmptyCount . " 行" . q . ","
-    . q . "details" . q . ":{" . q . "total_lines" . q . ":" . lines.Length . ","
-    . q . "numbered_lines" . q . ":" . nonEmptyCount . ","
-    . q . "format" . q . ":" . q . formatNames[formatType] . q . "}}"
-try {
-    FileAppend output, "*"
+pasted := false
+if (autoPaste && targetHwnd && WinExist(targetHwnd) && WinGetClass(targetHwnd) != "ConsoleWindowClass") {
+    WinActivate(targetHwnd)
+    Sleep 100
+    Send("^v")
+    pasted := true
 }
+
+Notify(apiBase, pasted ? "编号完成，已替换选中文本" : "编号完成，结果已复制到剪贴板", "success")
 ExitApp 0
 
-
-ExtractJsonText(json) {
-    for key in ["text", "content"] {
-        keyMarker := Chr(34) . key . Chr(34) . ":"
-        start := InStr(json, keyMarker)
-        if !start {
-            continue
-        }
-        start += StrLen(keyMarker)
-        while (start <= StrLen(json)) {
-            ch := SubStr(json, start, 1)
-            if (ch != " " && ch != "`t" && ch != "`n" && ch != "`r") {
-                break
-            }
-            start++
-        }
-        firstChar := SubStr(json, start, 1)
-        if (firstChar = "[") {
-            return ExtractJsonArray(json, start)
-        }
-        if (firstChar = Chr(34)) {
-            return ExtractJsonString(json, start + 1)
-        }
+BoxNotify(apiBase, notifyType, message) {
+    try {
+        body := JSON.stringify(Map("notify_type", notifyType, "message", message, "duration", 3000), , "")
+        whr := ComObject("WinHttp.WinHttpRequest.5.1")
+        whr.Open("POST", apiBase . "/api/notify", false)
+        whr.SetRequestHeader("Content-Type", "application/json")
+        whr.Send(body)
+        return true
     }
-    return ""
+    return false
 }
 
-ExtractJsonString(json, start) {
-    result := ""
-    i := start
-    while (i <= StrLen(json)) {
-        ch := SubStr(json, i, 1)
-        if (ch = Chr(34)) {
-            break
-        }
-        if (ch = "\") {
-            i++
-            nextCh := SubStr(json, i, 1)
-            if (nextCh = Chr(34)) {
-                result .= Chr(34)
-            } else if (nextCh = "n") {
-                result .= "`n"
-            } else if (nextCh = "r") {
-                result .= "`r"
-            } else if (nextCh = "t") {
-                result .= "`t"
-            } else if (nextCh = "\") {
-                result .= "\"
-            } else if (nextCh = "/") {
-                result .= "/"
-            } else if (nextCh = "u") {
-                hexStr := SubStr(json, i + 1, 4)
-                result .= Chr(Integer("0x" . hexStr))
-                i += 4
-            } else {
-                result .= "\"
-            }
-            i++
-            continue
-        }
-        result .= ch
-        i++
-    }
-    return result
-}
-
-ExtractJsonArray(json, start) {
-    parts := []
-    i := start + 1
-    while (i <= StrLen(json)) {
-        ch := SubStr(json, i, 1)
-        if (ch = Chr(34)) {
-            part := ExtractJsonString(json, i + 1)
-            parts.Push(part)
-            seek := i + 1
-            while (seek <= StrLen(json)) {
-                sc := SubStr(json, seek, 1)
-                if (sc = Chr(34)) {
-                    bc := 0
-                    bk := seek - 1
-                    while (bk >= 1 && SubStr(json, bk, 1) = "\") {
-                        bc++
-                        bk--
-                    }
-                    if (Mod(bc, 2) = 0) {
-                        i := seek + 1
-                        break
-                    }
-                }
-                seek++
-            }
-            continue
-        }
-        if (ch = "]") {
-            break
-        }
-        i++
-    }
-    out := ""
-    for p in parts {
-        if out != "" {
-            out .= "`n"
-        }
-        out .= p
-    }
-    return out
+Notify(apiBase, message, notifyType) {
+    if (apiBase != "" && BoxNotify(apiBase, notifyType, message))
+        return
+    TrayTip "文本编号", message, "Iconi"
 }
 
 ShowFormatGui(lineCount) {
     result := 0
+    autoPaste := true
     myGui := Gui("+AlwaysOnTop +ToolWindow", "文本编号")
     myGui.SetFont("s9", "Microsoft YaHei UI")
-    myGui.Add("Text", "w360", "已获取 " . lineCount . " 行文本，请选择编号格式：")
+    myGui.Add("Text", "w430", "已获取 " . lineCount . " 行文本，请选择编号格式：")
 
-    myGui.Add("Radio", "vFmt1 Checked Group", "1 2 3  (纯数字)")
-    myGui.Add("Radio", "vFmt2", "01 02 03  (前导零)")
-    myGui.Add("Radio", "vFmt3", "(1) (2) (3)  (半角括号)")
-    myGui.Add("Radio", "vFmt4", "（1）（2）（3）(全角括号)")
-    myGui.Add("Radio", "vFmt5", "[1] [2] [3]  (方括号)")
-    myGui.Add("Radio", "vFmt6", "【1】【2】【3】(空心括号)")
-    myGui.Add("Radio", "vFmt7", "1. 2. 3.  (数字加点)")
-    myGui.Add("Radio", "vFmt8", "a b c  (小写字母)")
-    myGui.Add("Radio", "vFmt9", "A B C  (大写字母)")
-    myGui.Add("Radio", "vFmt10", "① ② ③  (带圈数字)")
-    myGui.Add("Radio", "vFmt11", "i ii iii  (小写罗马)")
-    myGui.Add("Radio", "vFmt12", "I II III  (大写罗马)")
-    myGui.Add("Radio", "vFmt13", "一 二 三  (中文小写)")
-    myGui.Add("Radio", "vFmt14", "壹 贰 叁  (中文大写)")
+    fmtDefs := [
+        "1 2 3  (纯数字)",
+        "01 02 03  (前导零)",
+        "(1) (2) (3)  (半角括号)",
+        "（1）（2）（3）(全角括号)",
+        "[1] [2] [3]  (方括号)",
+        "【1】【2】【3】(空心括号)",
+        "1. 2. 3.  (数字加点)",
+        "a b c  (小写字母)",
+        "A B C  (大写字母)",
+        "① ② ③  (带圈数字)",
+        "i ii iii  (小写罗马)",
+        "I II III  (大写罗马)",
+        "一 二 三  (中文小写)",
+        "壹 贰 叁  (中文大写)"
+    ]
+    for i, fmt in fmtDefs {
+        row := Mod(i - 1, 7) + 1
+        col := (i <= 7) ? 1 : 2
+        opts := "vFmt" . i
+        if i = 1
+            opts .= " Checked Group"
+        opts .= " x" . ((col = 1) ? 12 : 225) . " y" . (40 + (row - 1) * 26)
+        myGui.Add("Radio", opts, fmt)
+    }
 
+    myGui.Add("CheckBox", "vAutoPaste Checked", "编号后自动粘贴替换选中文本")
     myGui.Add("Button", "Default w80 xm", "确定").OnEvent("Click", OkBtn)
     myGui.Add("Button", "x+m w80", "取消").OnEvent("Click", CancelBtn)
     myGui.OnEvent("Escape", CancelBtn)
     myGui.Show()
     WinWaitClose(myGui)
-    return result
+    return [result, autoPaste]
 
     OkBtn(*) {
         sub := myGui.Submit()
-        if sub.Fmt1
-            result := 1
-        else if sub.Fmt2
-            result := 2
-        else if sub.Fmt3
-            result := 3
-        else if sub.Fmt4
-            result := 4
-        else if sub.Fmt5
-            result := 5
-        else if sub.Fmt6
-            result := 6
-        else if sub.Fmt7
-            result := 7
-        else if sub.Fmt8
-            result := 8
-        else if sub.Fmt9
-            result := 9
-        else if sub.Fmt10
-            result := 10
-        else if sub.Fmt11
-            result := 11
-        else if sub.Fmt12
-            result := 12
-        else if sub.Fmt13
-            result := 13
-        else if sub.Fmt14
-            result := 14
+        result := 0
+        loop 14 {
+            if sub.%("Fmt" . A_Index)% {
+                result := A_Index
+                break
+            }
+        }
+        autoPaste := sub.AutoPaste
         myGui.Destroy()
     }
 
     CancelBtn(*) {
         result := 0
+        autoPaste := false
         myGui.Destroy()
     }
 }
